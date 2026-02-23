@@ -1,13 +1,10 @@
 use crate::db::{self, Note};
-use ratatui_textarea::TextArea;
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 use rusqlite::Connection;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Instant;
-
-#[derive(PartialEq)]
-pub enum Focus {
-    Sidebar,
-    Editor,
-}
 
 pub enum InputMode {
     Normal,
@@ -26,15 +23,13 @@ pub struct App {
     pub input_buf: String,
     pub show_help: bool,
     pub dragging_sidebar: bool,
-    pub focus: Focus,
-    pub editor: Option<TextArea<'static>>,
-    pub editing_note_id: Option<i64>,
-    pub dirty: bool,
-    pub last_edit: Option<Instant>,
+    pub picker: Option<Picker>,
+    pub image_states: HashMap<PathBuf, StatefulProtocol>,
+    pub status_msg: Option<(String, Instant)>,
 }
 
 impl App {
-    pub fn new(conn: Connection) -> Self {
+    pub fn new(conn: Connection, picker: Option<Picker>) -> Self {
         let notes = db::list_notes(&conn, false).unwrap_or_default();
         let mut app = Self {
             conn,
@@ -47,46 +42,33 @@ impl App {
             input_buf: String::new(),
             show_help: false,
             dragging_sidebar: false,
-            focus: Focus::Sidebar,
-            editor: None,
-            editing_note_id: None,
-            dirty: false,
-            last_edit: None,
+            picker,
+            image_states: HashMap::new(),
+            status_msg: None,
         };
-        app.load_note_into_editor();
+        app.reload_image_states();
         app
     }
 
-    pub fn load_note_into_editor(&mut self) {
-        if let Some(note) = self.notes.get(self.selected) {
-            let mut ta = TextArea::from(note.content.lines());
-            ta.set_cursor_line_style(ratatui::style::Style::default());
-            self.editing_note_id = Some(note.id);
-            self.editor = Some(ta);
-        } else {
-            self.editor = None;
-            self.editing_note_id = None;
-        }
-        self.dirty = false;
-        self.last_edit = None;
-    }
-
-    pub fn save_editor_content(&mut self) {
-        if !self.dirty { return; }
-        if let (Some(ta), Some(id)) = (&self.editor, self.editing_note_id) {
-            let content = ta.lines().join("\n");
-            let title = content.lines()
-                .find(|l| l.starts_with("# "))
-                .map(|l| l.trim_start_matches("# ").trim().to_string())
-                .unwrap_or_else(|| {
-                    self.notes.iter().find(|n| n.id == id)
-                        .map(|n| n.title.clone())
-                        .unwrap_or_default()
-                });
-            let _ = db::update_note(&self.conn, id, &title, &content);
-            self.dirty = false;
-            self.last_edit = None;
-            self.refresh_notes();
+    pub fn reload_image_states(&mut self) {
+        let picker = match &self.picker {
+            Some(p) => p,
+            None => { self.image_states.clear(); return; }
+        };
+        let content = match self.notes.get(self.selected) {
+            Some(n) => &n.content,
+            None => { self.image_states.clear(); return; }
+        };
+        let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+        let image_lines = crate::images::find_image_lines(&lines);
+        let needed: std::collections::HashSet<PathBuf> = image_lines.iter().map(|(_, p)| p.clone()).collect();
+        self.image_states.retain(|k, _| needed.contains(k));
+        for (_, path) in image_lines {
+            if self.image_states.contains_key(&path) { continue; }
+            if let Ok(dyn_img) = image::ImageReader::open(&path).and_then(|r| Ok(r.decode().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?)) {
+                let proto = picker.new_resize_protocol(dyn_img);
+                self.image_states.insert(path, proto);
+            }
         }
     }
 
@@ -103,17 +85,15 @@ impl App {
 
     pub fn move_down(&mut self) {
         if !self.notes.is_empty() && self.selected < self.notes.len() - 1 {
-            self.save_editor_content();
             self.selected += 1;
-            self.load_note_into_editor();
+            self.reload_image_states();
         }
     }
 
     pub fn move_up(&mut self) {
         if self.selected > 0 {
-            self.save_editor_content();
             self.selected -= 1;
-            self.load_note_into_editor();
+            self.reload_image_states();
         }
     }
 
@@ -125,51 +105,63 @@ impl App {
             } else {
                 let _ = db::archive_note(&self.conn, id);
             }
-            self.dirty = false;
             self.refresh_notes();
-            self.load_note_into_editor();
+            self.reload_image_states();
         }
     }
 
     pub fn toggle_show_archived(&mut self) {
-        self.save_editor_content();
         self.show_archived = !self.show_archived;
         self.refresh_notes();
-        self.load_note_into_editor();
+        self.reload_image_states();
     }
 
     pub fn delete_selected(&mut self) {
         if let Some(note) = self.notes.get(self.selected) {
             let _ = db::delete_note(&self.conn, note.id);
-            self.dirty = false;
             self.refresh_notes();
-            self.load_note_into_editor();
+            self.reload_image_states();
         }
     }
 
     pub fn create_note_from_input(&mut self) -> Option<i64> {
         let title = self.input_buf.trim().to_string();
         if title.is_empty() { return None; }
-        self.save_editor_content();
         let id = db::create_note(&self.conn, &title).ok()?;
         self.refresh_notes();
         self.selected = 0;
-        self.load_note_into_editor();
+        self.reload_image_states();
         Some(id)
     }
 
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
-        self.last_edit = Some(Instant::now());
+    pub fn set_status(&mut self, msg: &str) {
+        self.status_msg = Some((msg.to_string(), Instant::now()));
     }
 
-    pub fn check_autosave(&mut self) {
-        if self.dirty {
-            if let Some(t) = self.last_edit {
-                if t.elapsed().as_secs() >= 1 {
-                    self.save_editor_content();
-                }
+    pub fn current_status(&self) -> Option<&str> {
+        if let Some((msg, t)) = &self.status_msg {
+            if t.elapsed().as_secs() < 3 { return Some(msg); }
+        }
+        None
+    }
+
+    /// Insert text at the end of the current note's content and save.
+    pub fn append_to_current_note(&mut self, text: &str) {
+        if let Some(note) = self.notes.get(self.selected) {
+            let id = note.id;
+            let mut content = note.content.clone();
+            if !content.is_empty() && !content.ends_with('\n') {
+                content.push('\n');
             }
+            content.push_str(text);
+            content.push('\n');
+            let title = content.lines()
+                .find(|l| l.starts_with("# "))
+                .map(|l| l.trim_start_matches("# ").trim().to_string())
+                .unwrap_or_else(|| note.title.clone());
+            let _ = db::update_note(&self.conn, id, &title, &content);
+            self.refresh_notes();
+            self.reload_image_states();
         }
     }
 }

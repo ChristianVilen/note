@@ -2,8 +2,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
-use crate::app::{App, Focus, InputMode};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui_image::StatefulImage;
+use crate::app::{App, InputMode};
+use crate::images;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::vertical([
@@ -56,14 +58,8 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let mut state = ListState::default();
     state.select(Some(app.selected));
 
-    let border_style = if app.focus == Focus::Sidebar {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
     let list = List::new(items)
-        .block(Block::default().borders(Borders::RIGHT).title(header).border_style(border_style))
+        .block(Block::default().borders(Borders::RIGHT).title(header).border_style(Style::default().fg(Color::Yellow)))
         .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
         .highlight_symbol("▸ ");
 
@@ -74,44 +70,142 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
     let title = app.selected_note()
         .map(|n| format!(" {} ", n.title))
         .unwrap_or_default();
-    let is_focused = app.focus == Focus::Editor;
 
-    if let Some(ref mut ta) = app.editor {
-        let border_style = if is_focused {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-        ta.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(border_style)
-        );
-
-        if is_focused {
-            ta.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
-        } else {
-            ta.set_cursor_style(Style::default());
+    let content = match app.selected_note() {
+        Some(n) => &n.content,
+        None => {
+            let msg = Paragraph::new("No notes yet. Press 'n' to create one.")
+                .style(Style::default().fg(Color::DarkGray));
+            f.render_widget(msg, inner);
+            return;
         }
+    };
 
-        f.render_widget(&*ta, area);
-    } else {
-        let msg = Paragraph::new("No notes yet. Press 'n' to create one.")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::NONE));
-        f.render_widget(msg, area);
+    let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let image_lines = images::find_image_lines(&lines);
+
+    // No images or no picker — render as plain markdown text
+    if image_lines.is_empty() || app.picker.is_none() {
+        let styled = style_markdown(&lines);
+        let para = Paragraph::new(styled).wrap(Wrap { trim: false });
+        f.render_widget(para, inner);
+        return;
     }
+
+    let image_line_set: std::collections::HashSet<usize> = image_lines.iter().map(|(i, _)| *i).collect();
+    let image_height: u16 = 10;
+
+    let mut constraints: Vec<Constraint> = Vec::new();
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut text_start: Option<usize> = None;
+
+    for i in 0..lines.len() {
+        if image_line_set.contains(&i) {
+            if let Some(start) = text_start.take() {
+                let count = i - start;
+                constraints.push(Constraint::Length(count as u16));
+                segments.push(Segment::Text(start, i));
+            }
+            let path = image_lines.iter().find(|(li, _)| *li == i).map(|(_, p)| p.clone()).unwrap();
+            constraints.push(Constraint::Length(image_height));
+            segments.push(Segment::Image(path));
+        } else if text_start.is_none() {
+            text_start = Some(i);
+        }
+    }
+    if let Some(start) = text_start {
+        let count = lines.len() - start;
+        constraints.push(Constraint::Length(count as u16));
+        segments.push(Segment::Text(start, lines.len()));
+    }
+
+    let total_height: u16 = constraints.iter().map(|c| match c {
+        Constraint::Length(h) => *h,
+        _ => 0,
+    }).sum();
+    if total_height > inner.height {
+        // Fallback: just render text if it doesn't fit
+        let styled = style_markdown(&lines);
+        let para = Paragraph::new(styled).wrap(Wrap { trim: false });
+        f.render_widget(para, inner);
+        return;
+    }
+
+    constraints.push(Constraint::Min(0));
+    let chunk_areas = Layout::vertical(&constraints).split(inner);
+
+    for (idx, seg) in segments.iter().enumerate() {
+        match seg {
+            Segment::Text(start, end) => {
+                let styled = style_markdown(&lines[*start..*end]);
+                let para = Paragraph::new(styled);
+                f.render_widget(para, chunk_areas[idx]);
+            }
+            Segment::Image(path) => {
+                if let Some(state) = app.image_states.get_mut(path) {
+                    let img_widget = StatefulImage::default();
+                    f.render_stateful_widget(img_widget, chunk_areas[idx], state);
+                } else {
+                    let placeholder = Paragraph::new("[image not found]")
+                        .style(Style::default().fg(Color::DarkGray));
+                    f.render_widget(placeholder, chunk_areas[idx]);
+                }
+            }
+        }
+    }
+}
+
+enum Segment {
+    Text(usize, usize),
+    Image(std::path::PathBuf),
+}
+
+/// Basic markdown styling for the preview pane.
+fn style_markdown(lines: &[String]) -> Vec<Line<'_>> {
+    lines.iter().map(|line| {
+        if line.starts_with("# ") {
+            Line::from(Span::styled(&line[2..], Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
+        } else if line.starts_with("## ") {
+            Line::from(Span::styled(&line[3..], Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
+        } else if line.starts_with("### ") {
+            Line::from(Span::styled(&line[4..], Style::default().fg(Color::Cyan)))
+        } else if line.starts_with("- ") || line.starts_with("* ") {
+            Line::from(vec![
+                Span::styled("  • ", Style::default().fg(Color::Yellow)),
+                Span::raw(&line[2..]),
+            ])
+        } else if line.starts_with("> ") {
+            Line::from(Span::styled(line.as_str(), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)))
+        } else if line.starts_with("```") {
+            Line::from(Span::styled(line.as_str(), Style::default().fg(Color::Green)))
+        } else if line.starts_with("![") {
+            Line::from(Span::styled(line.as_str(), Style::default().fg(Color::Blue)))
+        } else {
+            Line::from(line.as_str())
+        }
+    }).collect()
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let count = app.notes.len();
     let filter = if app.show_archived { " [showing archived]" } else { "" };
-    let dirty = if app.dirty { " [modified]" } else { "" };
-    let focus = if app.focus == Focus::Editor { " [editing]" } else { "" };
-    let hints = " Tab:focus  j/k:nav  n:new  a:archive  E:ext-editor  d:delete  ?:help  q:quit";
-    let right = format!(" {count} notes{filter}{dirty}{focus} ");
+    let version = env!("CARGO_PKG_VERSION");
+
+    if let Some(status) = app.current_status() {
+        let bar = Line::from(Span::styled(format!(" {status}"), Style::default().fg(Color::Green)));
+        f.render_widget(Paragraph::new(bar), area);
+        return;
+    }
+
+    let hints = " j/k:nav  e/↵:edit  n:new  a:archive  d:delete  Ctrl+S:screenshot  ?:help  q:quit";
+    let right = format!(" {count} notes{filter}  v{version} ");
     let left_width = area.width.saturating_sub(right.len() as u16) as usize;
     let left = if hints.len() > left_width {
         format!("{}", &hints[..left_width])
@@ -146,20 +240,19 @@ fn draw_confirm_delete(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {
-    let popup = centered_rect(60, 16, area);
+    let popup = centered_rect(60, 15, area);
     f.render_widget(Clear, popup);
     let help = vec![
-        "Tab            Toggle sidebar / editor focus",
-        "j / k          Navigate notes (sidebar)",
-        "E              Edit in external $EDITOR",
+        "j / k / ↑ / ↓  Navigate notes",
+        "e / Enter      Edit note in $EDITOR (nvim)",
         "n              Create new note",
         "a              Archive / unarchive note",
         "A              Toggle show archived",
         "d              Delete note",
-        "Ctrl+U / Ctrl+R  Undo / Redo (editor)",
+        "Ctrl+S         Paste screenshot from clipboard",
         "Drag border    Resize sidebar",
         "?              Toggle this help",
-        "q              Quit (sidebar focus)",
+        "q              Quit",
     ];
     let lines: Vec<Line> = help.iter().map(|l| Line::from(*l)).collect();
     let para = Paragraph::new(lines)

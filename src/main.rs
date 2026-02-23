@@ -1,26 +1,32 @@
 mod app;
 mod db;
+mod images;
 mod ui;
 
-use app::{App, Focus, InputMode};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
+use app::{App, InputMode};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind, EnableMouseCapture, DisableMouseCapture, EnableBracketedPaste, DisableBracketedPaste};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui_image::picker::Picker;
 use std::io;
 use std::process::Command;
 use std::time::Duration;
 
 fn main() -> anyhow::Result<()> {
     let conn = db::open_db().map_err(|e| anyhow::anyhow!(e))?;
-    let mut app = App::new(conn);
 
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+
+    let picker = Picker::from_query_stdio().ok();
+
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+
+    let mut app = App::new(conn, picker);
 
     while app.running {
         terminal.draw(|f| ui::draw(f, &mut app))?;
@@ -33,9 +39,10 @@ fn main() -> anyhow::Result<()> {
                     match app.input_mode {
                         InputMode::TitleInput => match key.code {
                             KeyCode::Enter => {
-                                app.create_note_from_input();
-                                app.input_mode = InputMode::Normal;
-                                app.focus = Focus::Editor;
+                                if let Some(id) = app.create_note_from_input() {
+                                    app.input_mode = InputMode::Normal;
+                                    launch_editor(&mut terminal, &mut app, Some(id))?;
+                                }
                             }
                             KeyCode::Esc => {
                                 app.input_buf.clear();
@@ -61,73 +68,39 @@ fn main() -> anyhow::Result<()> {
                                 continue;
                             }
 
-                            match app.focus {
-                                Focus::Sidebar => match key.code {
-                                    KeyCode::Tab => {
-                                        if app.editor.is_some() {
-                                            app.focus = Focus::Editor;
-                                        }
+                            match key.code {
+                                KeyCode::Char('q') => {
+                                    app.running = false;
+                                }
+                                KeyCode::Char('j') | KeyCode::Down => app.move_down(),
+                                KeyCode::Char('k') | KeyCode::Up => app.move_up(),
+                                KeyCode::Char('n') => {
+                                    app.input_buf.clear();
+                                    app.input_mode = InputMode::TitleInput;
+                                }
+                                KeyCode::Char('e') | KeyCode::Enter => {
+                                    launch_editor(&mut terminal, &mut app, None)?;
+                                }
+                                KeyCode::Char('a') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                                    app.toggle_archive();
+                                }
+                                KeyCode::Char('A') => app.toggle_show_archived(),
+                                KeyCode::Char('d') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                                    if app.selected_note().is_some() {
+                                        app.input_mode = InputMode::ConfirmDelete;
                                     }
-                                    KeyCode::Char('q') => {
-                                        app.save_editor_content();
-                                        app.running = false;
-                                    }
-                                    KeyCode::Char('j') => app.move_down(),
-                                    KeyCode::Char('k') => app.move_up(),
-                                    KeyCode::Char('n') => {
-                                        app.input_buf.clear();
-                                        app.input_mode = InputMode::TitleInput;
-                                    }
-                                    KeyCode::Char('E') => {
-                                        launch_editor(&mut terminal, &mut app, None)?;
-                                    }
-                                    KeyCode::Char('a') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                                        app.toggle_archive();
-                                    }
-                                    KeyCode::Char('A') => app.toggle_show_archived(),
-                                    KeyCode::Char('d') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                                        if app.selected_note().is_some() {
-                                            app.input_mode = InputMode::ConfirmDelete;
-                                        }
-                                    }
-                                    KeyCode::Char('?') => app.show_help = !app.show_help,
-                                    _ => {}
-                                },
-                                Focus::Editor => match key.code {
-                                    KeyCode::Tab => {
-                                        app.focus = Focus::Sidebar;
-                                    }
-                                    KeyCode::Esc => {
-                                        app.focus = Focus::Sidebar;
-                                    }
-                                    _ => {
-                                        if let Some(ref mut ta) = app.editor {
-                                            if ta.input(key) {
-                                                app.mark_dirty();
-                                            }
-                                        }
-                                    }
-                                },
+                                }
+                                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    handle_paste_image(&mut app);
+                                }
+                                KeyCode::Char('?') => app.show_help = !app.show_help,
+                                _ => {}
                             }
                         }
                     }
                 }
                 Event::Mouse(mouse) => {
                     match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            if app.focus == Focus::Editor {
-                                if let Some(ref mut ta) = app.editor {
-                                    ta.scroll((-3, 0));
-                                }
-                            }
-                        }
-                        MouseEventKind::ScrollDown => {
-                            if app.focus == Focus::Editor {
-                                if let Some(ref mut ta) = app.editor {
-                                    ta.scroll((3, 0));
-                                }
-                            }
-                        }
                         MouseEventKind::Down(_) => {
                             let border = app.sidebar_width;
                             if mouse.column >= border.saturating_sub(1) && mouse.column <= border + 1 {
@@ -143,17 +116,93 @@ fn main() -> anyhow::Result<()> {
                         _ => {}
                     }
                 }
+                Event::Paste(text) => {
+                    let trimmed = text.trim();
+                    if is_image_path(trimmed) {
+                        handle_drop_image(&mut app, trimmed);
+                    }
+                }
                 _ => {}
             }
-        } else {
-            // No event — check debounced auto-save
-            app.check_autosave();
         }
     }
 
     terminal::disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste)?;
     Ok(())
+}
+
+fn handle_paste_image(app: &mut App) {
+    match images::paste_image_from_clipboard() {
+        Ok(path) => {
+            let link = format!("![screenshot]({})", path.display());
+            app.append_to_current_note(&link);
+            app.set_status("Screenshot pasted");
+        }
+        Err(_) => {
+            app.set_status("No image in clipboard");
+        }
+    }
+}
+
+fn is_image_path(s: &str) -> bool {
+    let cleaned = s.trim_matches('\'').trim_matches('"')
+        .strip_prefix("file://").unwrap_or(s.trim_matches('\'').trim_matches('"'));
+    let lower = percent_decode(cleaned).to_lowercase();
+    (lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg")
+        || lower.ends_with(".gif") || lower.ends_with(".webp") || lower.ends_with(".bmp"))
+        && !lower.starts_with("http")
+}
+
+fn handle_drop_image(app: &mut App, path_str: &str) {
+    let cleaned = path_str
+        .trim()
+        .trim_matches('\'')
+        .trim_matches('"')
+        .strip_prefix("file://").unwrap_or(path_str.trim().trim_matches('\'').trim_matches('"'));
+    let decoded = percent_decode(cleaned);
+    let src = std::path::Path::new(&decoded);
+    if !src.exists() {
+        app.set_status(&format!("File not found: {}", decoded));
+        return;
+    }
+    let dest_dir = dirs::home_dir().unwrap().join(".note").join("attachments");
+    let _ = std::fs::create_dir_all(&dest_dir);
+    let filename = src.file_name().unwrap_or_default();
+    let dest = dest_dir.join(filename);
+    if let Err(_) = std::fs::copy(src, &dest) {
+        app.set_status("Failed to copy image");
+        return;
+    }
+    let link = format!("![screenshot]({})", dest.display());
+    app.append_to_current_note(&link);
+    app.set_status("Image added");
+}
+
+fn percent_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let hi = chars.next().unwrap_or(0);
+            let lo = chars.next().unwrap_or(0);
+            if let (Some(h), Some(l)) = (hex_val(hi), hex_val(lo)) {
+                result.push((h << 4 | l) as char);
+            }
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn launch_editor(
@@ -167,9 +216,6 @@ fn launch_editor(
         None => return Ok(()),
     };
 
-    // Save any pending inline edits first
-    app.save_editor_content();
-
     let note = db::get_note(&app.conn, note_id).map_err(|e| anyhow::anyhow!(e))?;
     let tmp = std::env::temp_dir().join(format!("note-{}.md", note_id));
     std::fs::write(&tmp, &note.content)?;
@@ -177,7 +223,7 @@ fn launch_editor(
     terminal::disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
 
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
     Command::new(&editor).arg(&tmp).status()?;
 
     execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
@@ -193,6 +239,6 @@ fn launch_editor(
         .unwrap_or(note.title);
     db::update_note(&app.conn, note_id, &title, &content).map_err(|e| anyhow::anyhow!(e))?;
     app.refresh_notes();
-    app.load_note_into_editor();
+    app.reload_image_states();
     Ok(())
 }
