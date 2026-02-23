@@ -113,12 +113,6 @@ Bracketed paste is enabled — dragging an image file into the terminal is detec
 - Ghostty (and most terminals) intercept `Cmd+key` combos — they never reach the app. That's why screenshot paste uses `Ctrl+S` instead of `Cmd+V`.
 - Bracketed paste mode is enabled so drag-and-drop file paths arrive as a single `Event::Paste(String)` rather than individual key events.
 
-## Future Ideas (not yet implemented)
+## Future Ideas
 
-- Full-text search / fuzzy find across notes
-- Tags or categories
-- Export to file / import from file
-- Configurable keybindings
-- Note linking (wiki-style `[[note title]]` references)
-- Scrolling in the preview pane for long notes
-- Better markdown rendering (inline bold/italic, code spans, numbered lists)
+See the roadmap in [README.md](README.md#roadmap).
