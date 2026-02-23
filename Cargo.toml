@@ -9,5 +9,5 @@ chrono = "0.4.43"
 crossterm = "0.29.0"
 dirs = "6.0.0"
 ratatui = "0.30.0"
+ratatui-textarea = { version = "0.8", features = ["crossterm"] }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
-syntect = "5.3.0"

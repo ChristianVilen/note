@@ -2,10 +2,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
-use crate::app::{App, InputMode};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use crate::app::{App, Focus, InputMode};
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(1),
@@ -14,16 +14,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     let main_area = chunks[0];
     let status_area = chunks[1];
 
-    if app.focus_mode {
-        draw_content(f, app, main_area);
-    } else {
-        let panes = Layout::horizontal([
-            Constraint::Length(app.sidebar_width),
-            Constraint::Min(1),
-        ]).split(main_area);
-        draw_sidebar(f, app, panes[0]);
-        draw_content(f, app, panes[1]);
-    }
+    let panes = Layout::horizontal([
+        Constraint::Length(app.sidebar_width),
+        Constraint::Min(1),
+    ]).split(main_area);
+    draw_sidebar(f, app, panes[0]);
+    draw_content(f, app, panes[1]);
 
     draw_status_bar(f, app, status_area);
 
@@ -60,42 +56,62 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let mut state = ListState::default();
     state.select(Some(app.selected));
 
+    let border_style = if app.focus == Focus::Sidebar {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::RIGHT).title(header))
+        .block(Block::default().borders(Borders::RIGHT).title(header).border_style(border_style))
         .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
         .highlight_symbol("▸ ");
 
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_content(f: &mut Frame, app: &App, area: Rect) {
-    match app.selected_note() {
-        Some(note) => {
-            let lines = app.highlight.highlight(&note.content);
-            let total = lines.len() as u16;
-            let visible = area.height.saturating_sub(2);
-            let offset = app.scroll_offset.min(total.saturating_sub(visible));
+fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
+    let title = app.selected_note()
+        .map(|n| format!(" {} ", n.title))
+        .unwrap_or_default();
+    let is_focused = app.focus == Focus::Editor;
 
-            let para = Paragraph::new(lines)
-                .block(Block::default().borders(Borders::NONE).title(format!(" {} ", note.title)))
-                .wrap(Wrap { trim: false })
-                .scroll((offset, 0));
-            f.render_widget(para, area);
+    if let Some(ref mut ta) = app.editor {
+        let border_style = if is_focused {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        ta.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(border_style)
+        );
+
+        if is_focused {
+            ta.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
+        } else {
+            ta.set_cursor_style(Style::default());
         }
-        None => {
-            let msg = Paragraph::new("No notes yet. Press 'n' to create one.")
-                .style(Style::default().fg(Color::DarkGray))
-                .block(Block::default().borders(Borders::NONE));
-            f.render_widget(msg, area);
-        }
+
+        f.render_widget(&*ta, area);
+    } else {
+        let msg = Paragraph::new("No notes yet. Press 'n' to create one.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::NONE));
+        f.render_widget(msg, area);
     }
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let count = app.notes.len();
     let filter = if app.show_archived { " [showing archived]" } else { "" };
-    let hints = " j/k:nav  e:edit  n:new  a:archive  d:delete  Tab:focus  scroll:mouse  ?:help  q:quit";
-    let right = format!(" {count} notes{filter} ");
+    let dirty = if app.dirty { " [modified]" } else { "" };
+    let focus = if app.focus == Focus::Editor { " [editing]" } else { "" };
+    let hints = " Tab:focus  j/k:nav  n:new  a:archive  E:ext-editor  d:delete  ?:help  q:quit";
+    let right = format!(" {count} notes{filter}{dirty}{focus} ");
     let left_width = area.width.saturating_sub(right.len() as u16) as usize;
     let left = if hints.len() > left_width {
         format!("{}", &hints[..left_width])
@@ -133,17 +149,17 @@ fn draw_help(f: &mut Frame, area: Rect) {
     let popup = centered_rect(60, 16, area);
     f.render_widget(Clear, popup);
     let help = vec![
-        "j / k          Navigate notes",
-        "e              Edit selected note ($EDITOR)",
+        "Tab            Toggle sidebar / editor focus",
+        "j / k          Navigate notes (sidebar)",
+        "E              Edit in external $EDITOR",
         "n              Create new note",
         "a              Archive / unarchive note",
         "A              Toggle show archived",
         "d              Delete note",
-        "Tab            Toggle focus mode",
-        "Scroll wheel   Scroll content",
+        "Ctrl+U / Ctrl+R  Undo / Redo (editor)",
         "Drag border    Resize sidebar",
         "?              Toggle this help",
-        "q              Quit",
+        "q              Quit (sidebar focus)",
     ];
     let lines: Vec<Line> = help.iter().map(|l| Line::from(*l)).collect();
     let para = Paragraph::new(lines)
