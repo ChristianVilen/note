@@ -198,6 +198,12 @@ fn main() -> anyhow::Result<()> {
                         MouseEventKind::Up(_) => {
                             app.dragging_sidebar = false;
                         }
+                        MouseEventKind::ScrollDown => {
+                            app.scroll_offset = app.scroll_offset.saturating_add(3);
+                        }
+                        MouseEventKind::ScrollUp => {
+                            app.scroll_offset = app.scroll_offset.saturating_sub(3);
+                        }
                         _ => {}
                     }
                 }
@@ -302,7 +308,7 @@ fn launch_editor(
     };
 
     let note = db::get_note(&app.conn, note_id).map_err(|e| anyhow::anyhow!(e))?;
-    let tmp = std::env::temp_dir().join(format!("note-{}.md", note_id));
+    let tmp = std::env::temp_dir().join(format!("note-{}.txt", note_id));
     std::fs::write(&tmp, &note.content)?;
 
     terminal::disable_raw_mode()?;

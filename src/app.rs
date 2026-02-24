@@ -33,6 +33,7 @@ pub struct App {
     pub search_results: Vec<(usize, String, Option<String>)>,
     pub search_selected: usize,
     pub highlight_term: Option<String>,
+    pub scroll_offset: u16,
 }
 
 impl App {
@@ -56,12 +57,14 @@ impl App {
             search_results: Vec::new(),
             search_selected: 0,
             highlight_term: None,
+            scroll_offset: 0,
         };
         app.reload_image_states();
         app
     }
 
     pub fn reload_image_states(&mut self) {
+        self.scroll_offset = 0;
         let picker = match &self.picker {
             Some(p) => p,
             None => { self.image_states.clear(); return; }

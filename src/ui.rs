@@ -99,7 +99,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
     // No images or no picker — render as plain markdown text
     if image_lines.is_empty() || app.picker.is_none() {
         let styled = style_markdown(&lines, app.highlight_term.as_deref());
-        let para = Paragraph::new(styled).wrap(Wrap { trim: false });
+        let para = Paragraph::new(styled).wrap(Wrap { trim: false }).scroll((app.scroll_offset, 0));
         f.render_widget(para, inner);
         return;
     }
@@ -138,7 +138,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
     if total_height > inner.height {
         // Fallback: just render text if it doesn't fit
         let styled = style_markdown(&lines, app.highlight_term.as_deref());
-        let para = Paragraph::new(styled).wrap(Wrap { trim: false });
+        let para = Paragraph::new(styled).wrap(Wrap { trim: false }).scroll((app.scroll_offset, 0));
         f.render_widget(para, inner);
         return;
     }

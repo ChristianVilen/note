@@ -66,6 +66,7 @@ Image attachments are stored as files in `~/.note/attachments/` and referenced v
 - `search_results: Vec<(usize, String, Option<String>)>` — Filtered results (index into notes, title, optional content snippet).
 - `search_selected: usize` — Cursor position within search results.
 - `highlight_term: Option<String>` — Persisted search term for preview pane highlighting after `fw` search. Cleared on `Esc` in Normal mode.
+- `scroll_offset: u16` — Vertical scroll position for the preview pane. Reset to 0 when switching notes.
 
 ### Event Loop
 
@@ -84,6 +85,10 @@ Key routing in `Normal` mode:
 - `Ctrl+S` paste screenshot from clipboard
 - `Esc` clears search highlight (from `fw` results)
 - `?` help, `q` quit
+
+Mouse:
+- Drag sidebar border to resize
+- Scroll wheel on preview pane to scroll content
 
 Search popups (`SearchTitle` / `SearchContent`):
 - Type to filter results live

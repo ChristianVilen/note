@@ -50,11 +50,8 @@ Supported terminals: Ghostty, Kitty, WezTerm, iTerm2. Falls back to text in unsu
 ## Roadmap
 
 - [x] Full-text search / fuzzy find
-- [ ] Tags or categories
 - [ ] Export / import notes
-- [ ] Configurable keybindings
-- [ ] Note linking (`[[wiki-style]]` references)
-- [ ] Preview pane scrolling for long notes
+- [x] Preview pane scrolling for long notes
 - [ ] Better markdown rendering (bold/italic, code spans, numbered lists)
 - [ ] Orphaned attachment cleanup
 
