@@ -58,10 +58,14 @@ Image attachments are stored as files in `~/.note/attachments/` and referenced v
 
 ### App State (`App` struct)
 
-- `input_mode: InputMode` — `Normal`, `TitleInput` (new note popup), or `ConfirmDelete`.
+- `input_mode: InputMode` — `Normal`, `TitleInput` (new note popup), `ConfirmDelete`, `LeaderF` (waiting for second key after `f`), `SearchTitle` (fuzzy find by title popup), or `SearchContent` (grep by content popup).
 - `picker: Option<Picker>` — `ratatui-image` picker for terminal graphics protocol detection. `None` if terminal doesn't support image rendering.
 - `image_states: HashMap<PathBuf, StatefulProtocol>` — Loaded image render states for the current note, keyed by file path.
 - `status_msg: Option<(String, Instant)>` — Transient status message shown in the status bar for 3 seconds.
+- `search_query: String` — Current search input text in search popups.
+- `search_results: Vec<(usize, String, Option<String>)>` — Filtered results (index into notes, title, optional content snippet).
+- `search_selected: usize` — Cursor position within search results.
+- `highlight_term: Option<String>` — Persisted search term for preview pane highlighting after `fw` search. Cleared on `Esc` in Normal mode.
 
 ### Event Loop
 
@@ -71,10 +75,21 @@ Key routing in `Normal` mode:
 - `j/k/↑/↓` navigate notes
 - `e` or `Enter` opens the selected note in `$EDITOR` (default: nvim)
 - `n` creates a new note (title popup → then opens in editor)
+- `f` enters `LeaderF` mode — status bar shows `f-…`, waiting for second key:
+  - `f` → `SearchTitle` mode (fuzzy find by title)
+  - `w` → `SearchContent` mode (grep by content)
+  - Any other key or `Esc` → back to `Normal`
 - `a` archive/unarchive, `A` toggle show archived
 - `d` delete (with confirmation)
 - `Ctrl+S` paste screenshot from clipboard
+- `Esc` clears search highlight (from `fw` results)
 - `?` help, `q` quit
+
+Search popups (`SearchTitle` / `SearchContent`):
+- Type to filter results live
+- `↑/↓` navigate results
+- `Enter` jumps to the selected note (and in `SearchContent`, persists the highlight term)
+- `Esc` closes the popup
 
 Bracketed paste is enabled — dragging an image file into the terminal is detected and handled (copies to attachments, inserts markdown link).
 

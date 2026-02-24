@@ -34,6 +34,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.show_help {
         draw_help(f, main_area);
     }
+    match app.input_mode {
+        InputMode::SearchTitle => draw_search_popup(f, app, main_area, " Find note (title) "),
+        InputMode::SearchContent => draw_search_popup(f, app, main_area, " Grep note (content) "),
+        _ => {}
+    }
 }
 
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
@@ -93,7 +98,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
 
     // No images or no picker — render as plain markdown text
     if image_lines.is_empty() || app.picker.is_none() {
-        let styled = style_markdown(&lines);
+        let styled = style_markdown(&lines, app.highlight_term.as_deref());
         let para = Paragraph::new(styled).wrap(Wrap { trim: false });
         f.render_widget(para, inner);
         return;
@@ -132,7 +137,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
     }).sum();
     if total_height > inner.height {
         // Fallback: just render text if it doesn't fit
-        let styled = style_markdown(&lines);
+        let styled = style_markdown(&lines, app.highlight_term.as_deref());
         let para = Paragraph::new(styled).wrap(Wrap { trim: false });
         f.render_widget(para, inner);
         return;
@@ -144,7 +149,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
     for (idx, seg) in segments.iter().enumerate() {
         match seg {
             Segment::Text(start, end) => {
-                let styled = style_markdown(&lines[*start..*end]);
+                let styled = style_markdown(&lines[*start..*end], app.highlight_term.as_deref());
                 let para = Paragraph::new(styled);
                 f.render_widget(para, chunk_areas[idx]);
             }
@@ -168,9 +173,10 @@ enum Segment {
 }
 
 /// Basic markdown styling for the preview pane.
-fn style_markdown(lines: &[String]) -> Vec<Line<'_>> {
+fn style_markdown<'a>(lines: &'a [String], highlight: Option<&str>) -> Vec<Line<'a>> {
+    let hl = highlight.map(|h| h.to_lowercase());
     lines.iter().map(|line| {
-        if line.starts_with("# ") {
+        let base_line = if line.starts_with("# ") {
             Line::from(Span::styled(&line[2..], Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
         } else if line.starts_with("## ") {
             Line::from(Span::styled(&line[3..], Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
@@ -189,8 +195,40 @@ fn style_markdown(lines: &[String]) -> Vec<Line<'_>> {
             Line::from(Span::styled(line.as_str(), Style::default().fg(Color::Blue)))
         } else {
             Line::from(line.as_str())
+        };
+        if let Some(ref hl_term) = hl {
+            highlight_line(base_line, hl_term)
+        } else {
+            base_line
         }
     }).collect()
+}
+
+fn highlight_line<'a>(line: Line<'a>, term: &str) -> Line<'a> {
+    let hl_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+    let mut new_spans = Vec::new();
+    for span in line.spans {
+        let text = span.content.to_string();
+        let lower = text.to_lowercase();
+        if !lower.contains(term) {
+            new_spans.push(Span::styled(text, span.style));
+            continue;
+        }
+        let mut remaining = text.as_str();
+        let mut lower_remaining = lower.as_str();
+        while let Some(pos) = lower_remaining.find(term) {
+            if pos > 0 {
+                new_spans.push(Span::styled(remaining[..pos].to_string(), span.style));
+            }
+            new_spans.push(Span::styled(remaining[pos..pos + term.len()].to_string(), hl_style));
+            remaining = &remaining[pos + term.len()..];
+            lower_remaining = &lower_remaining[pos + term.len()..];
+        }
+        if !remaining.is_empty() {
+            new_spans.push(Span::styled(remaining.to_string(), span.style));
+        }
+    }
+    Line::from(new_spans)
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
@@ -204,7 +242,13 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let hints = " j/k:nav  e/↵:edit  n:new  a:archive  d:delete  Ctrl+S:screenshot  ?:help  q:quit";
+    if matches!(app.input_mode, InputMode::LeaderF) {
+        let bar = Line::from(Span::styled(" f-…", Style::default().fg(Color::Yellow)));
+        f.render_widget(Paragraph::new(bar), area);
+        return;
+    }
+
+    let hints = " j/k:nav  e:edit  n:new  ff:find  fw:grep  a:archive  d:del  ?:help  q:quit";
     let right = format!(" {count} notes{filter}  v{version} ");
     let left_width = area.width.saturating_sub(right.len() as u16) as usize;
     let left = if hints.len() > left_width {
@@ -240,16 +284,19 @@ fn draw_confirm_delete(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {
-    let popup = centered_rect(60, 15, area);
+    let popup = centered_rect(60, 18, area);
     f.render_widget(Clear, popup);
     let help = vec![
         "j / k / ↑ / ↓  Navigate notes",
         "e / Enter      Edit note in $EDITOR (nvim)",
         "n              Create new note",
+        "ff             Find note by title",
+        "fw             Grep note content",
         "a              Archive / unarchive note",
         "A              Toggle show archived",
         "d              Delete note",
         "Ctrl+S         Paste screenshot from clipboard",
+        "Esc            Clear search highlight",
         "Drag border    Resize sidebar",
         "?              Toggle this help",
         "q              Quit",
@@ -259,6 +306,51 @@ fn draw_help(f: &mut Frame, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(" Keybindings "))
         .style(Style::default().fg(Color::Cyan));
     f.render_widget(para, popup);
+}
+
+fn draw_search_popup(f: &mut Frame, app: &App, area: Rect, title: &str) {
+    let height = 12u16.min(area.height.saturating_sub(4));
+    let popup = centered_rect(60, height, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default().borders(Borders::ALL).title(title)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    if inner.height < 2 { return; }
+
+    let query_area = Rect { height: 1, ..inner };
+    let results_area = Rect { y: inner.y + 1, height: inner.height - 1, ..inner };
+
+    let query_line = Line::from(vec![
+        Span::styled("❯ ", Style::default().fg(Color::Yellow)),
+        Span::raw(&app.search_query),
+    ]);
+    f.render_widget(Paragraph::new(query_line), query_area);
+    f.set_cursor_position((query_area.x + 2 + app.search_query.len() as u16, query_area.y));
+
+    let items: Vec<ListItem> = app.search_results.iter().map(|(_, title, snippet)| {
+        let mut lines = vec![Line::from(Span::styled(title.as_str(), Style::default().add_modifier(Modifier::BOLD)))];
+        if let Some(s) = snippet {
+            let display: String = if s.len() > results_area.width as usize - 4 {
+                format!("  {}…", &s[..results_area.width as usize - 5])
+            } else {
+                format!("  {s}")
+            };
+            lines.push(Line::from(Span::styled(display, Style::default().fg(Color::DarkGray))));
+        }
+        ListItem::new(lines)
+    }).collect();
+
+    let mut state = ListState::default();
+    if !app.search_results.is_empty() {
+        state.select(Some(app.search_selected));
+    }
+
+    let list = List::new(items)
+        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    f.render_stateful_widget(list, results_area, &mut state);
 }
 
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {

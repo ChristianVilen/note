@@ -29,10 +29,13 @@ Notes are stored in `~/.note/notes.db`. Editing opens `$EDITOR` (defaults to nvi
 | `j` / `k` / `↑` / `↓` | Navigate notes                  |
 | `e` / `Enter`         | Edit note in $EDITOR            |
 | `n`                   | Create new note                 |
+| `ff`                  | Find note by title              |
+| `fw`                  | Grep note content               |
 | `a`                   | Archive / unarchive             |
 | `A`                   | Toggle show archived            |
 | `d`                   | Delete (with confirmation)      |
 | `Ctrl+S`              | Paste screenshot from clipboard |
+| `Esc`                 | Clear search highlight          |
 | `?`                   | Help                            |
 | `q`                   | Quit                            |
 
@@ -46,7 +49,7 @@ Supported terminals: Ghostty, Kitty, WezTerm, iTerm2. Falls back to text in unsu
 
 ## Roadmap
 
-- [ ] Full-text search / fuzzy find
+- [x] Full-text search / fuzzy find
 - [ ] Tags or categories
 - [ ] Export / import notes
 - [ ] Configurable keybindings

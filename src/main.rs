@@ -59,6 +59,85 @@ fn main() -> anyhow::Result<()> {
                             }
                             _ => app.input_mode = InputMode::Normal,
                         },
+                        InputMode::LeaderF => match key.code {
+                            KeyCode::Char('f') => {
+                                app.search_query.clear();
+                                app.search_results.clear();
+                                app.search_selected = 0;
+                                app.input_mode = InputMode::SearchTitle;
+                            }
+                            KeyCode::Char('w') => {
+                                app.search_query.clear();
+                                app.search_results.clear();
+                                app.search_selected = 0;
+                                app.input_mode = InputMode::SearchContent;
+                            }
+                            _ => app.input_mode = InputMode::Normal,
+                        },
+                        InputMode::SearchTitle => match key.code {
+                            KeyCode::Esc => {
+                                app.search_query.clear();
+                                app.search_results.clear();
+                                app.input_mode = InputMode::Normal;
+                            }
+                            KeyCode::Enter => {
+                                if app.select_search_result() {
+                                    app.search_query.clear();
+                                    app.search_results.clear();
+                                    app.input_mode = InputMode::Normal;
+                                }
+                            }
+                            KeyCode::Down => {
+                                if app.search_selected + 1 < app.search_results.len() {
+                                    app.search_selected += 1;
+                                }
+                            }
+                            KeyCode::Up => {
+                                app.search_selected = app.search_selected.saturating_sub(1);
+                            }
+                            KeyCode::Backspace => {
+                                app.search_query.pop();
+                                app.search_notes_by_title(&app.search_query.clone());
+                            }
+                            KeyCode::Char(c) => {
+                                app.search_query.push(c);
+                                app.search_notes_by_title(&app.search_query.clone());
+                            }
+                            _ => {}
+                        },
+                        InputMode::SearchContent => match key.code {
+                            KeyCode::Esc => {
+                                app.search_query.clear();
+                                app.search_results.clear();
+                                app.input_mode = InputMode::Normal;
+                            }
+                            KeyCode::Enter => {
+                                let term = app.search_query.clone();
+                                if app.select_search_result() {
+                                    app.highlight_term = Some(term);
+                                    app.search_query.clear();
+                                    app.search_results.clear();
+                                    app.input_mode = InputMode::Normal;
+                                }
+                            }
+                            KeyCode::Down => {
+                                if app.search_selected + 1 < app.search_results.len() {
+                                    app.search_selected += 1;
+                                }
+                            }
+                            KeyCode::Up => {
+                                app.search_selected = app.search_selected.saturating_sub(1);
+                            }
+                            KeyCode::Backspace => {
+                                app.search_query.pop();
+                                app.search_notes_by_content(&app.search_query.clone());
+                            }
+                            KeyCode::Char(c) => {
+                                app.search_query.push(c);
+                                app.search_notes_by_content(&app.search_query.clone());
+                            }
+                            _ => {}
+                        },
                         InputMode::Normal => {
                             if app.show_help {
                                 match key.code {
@@ -90,10 +169,16 @@ fn main() -> anyhow::Result<()> {
                                         app.input_mode = InputMode::ConfirmDelete;
                                     }
                                 }
+                                KeyCode::Char('f') => {
+                                    app.input_mode = InputMode::LeaderF;
+                                }
                                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                     handle_paste_image(&mut app);
                                 }
                                 KeyCode::Char('?') => app.show_help = !app.show_help,
+                                KeyCode::Esc => {
+                                    app.highlight_term = None;
+                                }
                                 _ => {}
                             }
                         }
