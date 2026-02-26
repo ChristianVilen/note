@@ -35,6 +35,7 @@ Notes are stored in `~/.note/notes.db`. Editing opens `$EDITOR` (defaults to nvi
 | `A`                   | Toggle show archived            |
 | `d`                   | Delete (with confirmation)      |
 | `Ctrl+S`              | Paste screenshot from clipboard |
+| `y`                   | Yank (copy) selection           |
 | `Esc`                 | Clear search highlight          |
 | `?`                   | Help                            |
 | `q`                   | Quit                            |

@@ -4,7 +4,7 @@ mod images;
 mod ui;
 
 use app::{App, InputMode};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind, EnableMouseCapture, DisableMouseCapture, EnableBracketedPaste, DisableBracketedPaste};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind, EnableMouseCapture, DisableMouseCapture, EnableBracketedPaste, DisableBracketedPaste};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
@@ -156,6 +156,7 @@ fn main() -> anyhow::Result<()> {
                                 KeyCode::Char('n') => {
                                     app.input_buf.clear();
                                     app.input_mode = InputMode::TitleInput;
+                                    app.clear_selection();
                                 }
                                 KeyCode::Char('e') | KeyCode::Enter => {
                                     launch_editor(&mut terminal, &mut app, None)?;
@@ -171,13 +172,26 @@ fn main() -> anyhow::Result<()> {
                                 }
                                 KeyCode::Char('f') => {
                                     app.input_mode = InputMode::LeaderF;
+                                    app.clear_selection();
                                 }
                                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                     handle_paste_image(&mut app);
                                 }
                                 KeyCode::Char('?') => app.show_help = !app.show_help,
+                                KeyCode::Char('y') => {
+                                    if let Some(text) = app.get_selected_text() {
+                                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                                            let _ = cb.set_text(&text);
+                                            app.set_status("Copied to clipboard");
+                                        }
+                                        app.clear_selection();
+                                    } else {
+                                        app.set_status("No selection");
+                                    }
+                                }
                                 KeyCode::Esc => {
                                     app.highlight_term = None;
+                                    app.clear_selection();
                                 }
                                 _ => {}
                             }
@@ -186,23 +200,50 @@ fn main() -> anyhow::Result<()> {
                 }
                 Event::Mouse(mouse) => {
                     match mouse.kind {
-                        MouseEventKind::Down(_) => {
-                            let border = app.sidebar_width;
-                            if mouse.column >= border.saturating_sub(1) && mouse.column <= border + 1 {
-                                app.dragging_sidebar = true;
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            if let Some(pa) = app.preview_area {
+                                if mouse.column >= pa.x && mouse.column < pa.x + pa.width
+                                    && mouse.row >= pa.y && mouse.row < pa.y + pa.height
+                                {
+                                    let rel = (mouse.row - pa.y, mouse.column - pa.x);
+                                    app.selection_start = Some(rel);
+                                    app.selection_end = None;
+                                } else {
+                                    app.clear_selection();
+                                    let border = app.sidebar_width;
+                                    if mouse.column >= border.saturating_sub(1) && mouse.column <= border + 1 {
+                                        app.dragging_sidebar = true;
+                                    }
+                                }
+                            } else {
+                                let border = app.sidebar_width;
+                                if mouse.column >= border.saturating_sub(1) && mouse.column <= border + 1 {
+                                    app.dragging_sidebar = true;
+                                }
                             }
                         }
-                        MouseEventKind::Drag(_) if app.dragging_sidebar => {
-                            app.sidebar_width = mouse.column.max(15).min(60);
+                        MouseEventKind::Drag(MouseButton::Left) => {
+                            if app.dragging_sidebar {
+                                app.sidebar_width = mouse.column.max(15).min(60);
+                            } else if app.selection_start.is_some() {
+                                if let Some(pa) = app.preview_area {
+                                    let col = mouse.column.max(pa.x).min(pa.x + pa.width - 1) - pa.x;
+                                    let row = mouse.row.max(pa.y).min(pa.y + pa.height - 1) - pa.y;
+                                    app.selection_end = Some((row, col));
+                                }
+                            }
                         }
-                        MouseEventKind::Up(_) => {
+                        MouseEventKind::Up(MouseButton::Left) => {
                             app.dragging_sidebar = false;
+                            // selection_end already set by drag events
                         }
                         MouseEventKind::ScrollDown => {
                             app.scroll_offset = app.scroll_offset.saturating_add(3);
+                            app.clear_selection();
                         }
                         MouseEventKind::ScrollUp => {
                             app.scroll_offset = app.scroll_offset.saturating_sub(3);
+                            app.clear_selection();
                         }
                         _ => {}
                     }

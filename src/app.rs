@@ -1,4 +1,5 @@
 use crate::db::{self, Note};
+use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use rusqlite::Connection;
@@ -34,6 +35,9 @@ pub struct App {
     pub search_selected: usize,
     pub highlight_term: Option<String>,
     pub scroll_offset: u16,
+    pub preview_area: Option<Rect>,
+    pub selection_start: Option<(u16, u16)>,
+    pub selection_end: Option<(u16, u16)>,
 }
 
 impl App {
@@ -58,13 +62,22 @@ impl App {
             search_selected: 0,
             highlight_term: None,
             scroll_offset: 0,
+            preview_area: None,
+            selection_start: None,
+            selection_end: None,
         };
         app.reload_image_states();
         app
     }
 
+    pub fn clear_selection(&mut self) {
+        self.selection_start = None;
+        self.selection_end = None;
+    }
+
     pub fn reload_image_states(&mut self) {
         self.scroll_offset = 0;
+        self.clear_selection();
         let picker = match &self.picker {
             Some(p) => p,
             None => { self.image_states.clear(); return; }
@@ -190,6 +203,56 @@ impl App {
         false
     }
 
+    /// Extract text covered by the current selection from the preview pane.
+    pub fn get_selected_text(&self) -> Option<String> {
+        let (mut start, mut end) = match (self.selection_start, self.selection_end) {
+            (Some(s), Some(e)) => (s, e),
+            _ => return None,
+        };
+        if start > end { std::mem::swap(&mut start, &mut end); }
+        let width = self.preview_area?.width as usize;
+        if width == 0 { return None; }
+        let content = &self.selected_note()?.content;
+
+        // Build wrapped screen lines matching ratatui Wrap { trim: false }
+        let mut screen_lines: Vec<&str> = Vec::new();
+        for line in content.lines() {
+            if line.is_empty() {
+                screen_lines.push("");
+            } else {
+                let mut rem = line;
+                while !rem.is_empty() {
+                    let end_idx = rem.char_indices()
+                        .nth(width).map(|(i, _)| i)
+                        .unwrap_or(rem.len());
+                    screen_lines.push(&rem[..end_idx]);
+                    rem = &rem[end_idx..];
+                }
+            }
+        }
+        // Handle trailing newline producing an empty final line
+        if content.ends_with('\n') {
+            screen_lines.push("");
+        }
+
+        let scroll = self.scroll_offset as usize;
+        let (sr, sc) = (start.0 as usize + scroll, start.1 as usize);
+        let (er, ec) = (end.0 as usize + scroll, end.1 as usize);
+
+        let mut result = String::new();
+        for row in sr..=er {
+            if row >= screen_lines.len() { break; }
+            let chars: Vec<char> = screen_lines[row].chars().collect();
+            let c0 = if row == sr { sc.min(chars.len()) } else { 0 };
+            let c1 = if row == er { ec.min(chars.len()) } else { chars.len() };
+            if c0 <= c1 {
+                result.extend(&chars[c0..c1]);
+            }
+            if row < er { result.push('\n'); }
+        }
+        if result.is_empty() { None } else { Some(result) }
+    }
+
     /// Insert text at the end of the current note's content and save.
     pub fn append_to_current_note(&mut self, text: &str) {
         if let Some(note) = self.notes.get(self.selected) {
@@ -218,6 +281,46 @@ mod tests {
     fn test_app() -> App {
         let conn = db::open_memory().unwrap();
         App::new(conn, None)
+    }
+
+    #[test]
+    fn test_clear_selection() {
+        let mut app = test_app();
+        app.selection_start = Some((0, 0));
+        app.selection_end = Some((1, 5));
+        app.clear_selection();
+        assert!(app.selection_start.is_none());
+        assert!(app.selection_end.is_none());
+    }
+
+    #[test]
+    fn test_get_selected_text() {
+        let mut app = test_app();
+        let id = db::create_note(&app.conn, "Test").unwrap();
+        db::update_note(&app.conn, id, "Test", "# Test\nHello world\nSecond line").unwrap();
+        app.refresh_notes();
+        app.preview_area = Some(Rect::new(0, 0, 80, 24));
+        app.selection_start = Some((1, 0));
+        app.selection_end = Some((1, 5));
+        assert_eq!(app.get_selected_text(), Some("Hello".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_multiline() {
+        let mut app = test_app();
+        let id = db::create_note(&app.conn, "Test").unwrap();
+        db::update_note(&app.conn, id, "Test", "Line one\nLine two\nLine three").unwrap();
+        app.refresh_notes();
+        app.preview_area = Some(Rect::new(0, 0, 80, 24));
+        app.selection_start = Some((0, 5));
+        app.selection_end = Some((1, 4));
+        assert_eq!(app.get_selected_text(), Some("one\nLine".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_no_selection() {
+        let app = test_app();
+        assert_eq!(app.get_selected_text(), None);
     }
 
     #[test]

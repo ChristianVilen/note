@@ -67,6 +67,9 @@ Image attachments are stored as files in `~/.note/attachments/` and referenced v
 - `search_selected: usize` — Cursor position within search results.
 - `highlight_term: Option<String>` — Persisted search term for preview pane highlighting after `fw` search. Cleared on `Esc` in Normal mode.
 - `scroll_offset: u16` — Vertical scroll position for the preview pane. Reset to 0 when switching notes.
+- `preview_area: Option<Rect>` — The inner `Rect` of the preview pane, updated each frame. Used for hit-testing mouse events (text selection).
+- `selection_start: Option<(u16, u16)>` — Start of text selection in preview pane, as `(row, col)` relative to the preview inner area. `None` if no selection active.
+- `selection_end: Option<(u16, u16)>` — End of text selection. Both start and end must be `Some` for a complete selection.
 
 ### Event Loop
 
@@ -84,9 +87,11 @@ Key routing in `Normal` mode:
 - `d` delete (with confirmation)
 - `Ctrl+S` paste screenshot from clipboard
 - `Esc` clears search highlight (from `fw` results)
+- `y` yank (copy) mouse-selected text to clipboard
 - `?` help, `q` quit
 
 Mouse:
+- Click and drag in preview pane to select text (highlighted in blue)
 - Drag sidebar border to resize
 - Scroll wheel on preview pane to scroll content
 
@@ -115,6 +120,7 @@ Bracketed paste is enabled — dragging an image file into the terminal is detec
 ## Testing
 
 - DB module has unit tests using an in-memory SQLite database (`db::open_memory()`).
+- App module has unit tests for search and text selection (`clear_selection`, `get_selected_text`).
 - Image module has unit tests for path parsing and image line detection.
 - Run with `cargo test`.
 - No UI tests currently — the TUI is tested manually.

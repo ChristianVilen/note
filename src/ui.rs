@@ -22,6 +22,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     ]).split(main_area);
     draw_sidebar(f, app, panes[0]);
     draw_content(f, app, panes[1]);
+    draw_selection_highlight(f, app);
 
     draw_status_bar(f, app, status_area);
 
@@ -82,6 +83,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
         .border_style(Style::default().fg(Color::DarkGray));
     let inner = block.inner(area);
     f.render_widget(block, area);
+    app.preview_area = Some(inner);
 
     let content = match app.selected_note() {
         Some(n) => &n.content,
@@ -170,6 +172,31 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
 enum Segment {
     Text(usize, usize),
     Image(std::path::PathBuf),
+}
+
+fn draw_selection_highlight(f: &mut Frame, app: &App) {
+    let (mut start, mut end) = match (app.selection_start, app.selection_end) {
+        (Some(s), Some(e)) => (s, e),
+        _ => return,
+    };
+    let pa = match app.preview_area {
+        Some(a) => a,
+        None => return,
+    };
+    if start > end { std::mem::swap(&mut start, &mut end); }
+    let hl = Style::default().bg(Color::Blue).fg(Color::White);
+    let buf = f.buffer_mut();
+    for row in start.0..=end.0 {
+        let abs_y = pa.y + row;
+        if abs_y >= pa.y + pa.height { break; }
+        let c0 = if row == start.0 { start.1 } else { 0 };
+        let c1 = if row == end.0 { end.1 } else { pa.width };
+        for col in c0..c1 {
+            let abs_x = pa.x + col;
+            if abs_x >= pa.x + pa.width { break; }
+            buf[(abs_x, abs_y)].set_style(hl);
+        }
+    }
 }
 
 /// Basic markdown styling for the preview pane.
@@ -296,6 +323,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
         "A              Toggle show archived",
         "d              Delete note",
         "Ctrl+S         Paste screenshot from clipboard",
+        "y              Yank (copy) selection",
         "Esc            Clear search highlight",
         "Drag border    Resize sidebar",
         "?              Toggle this help",
